@@ -34,9 +34,6 @@
 #include <sys/iosupport.h>
 #include <sys/statvfs.h>
 
-#include <coreinit/time.h>
-void FSTimeToCalendarTime(OSTime time, OSCalendarTime *calendarTime);
-
 typedef struct _fs_dev_private_t {
     char *mount_path;
     int fsaFd;
@@ -148,17 +145,17 @@ static int fs_dev_translate_error(FSStatus error) {
     return (int) error;
 }
 
-static mode_t fs_dev_translate_mode(FSDevStatFlags mode) {
-    if ((mode & FS_DEV_STAT_LINK) == FS_DEV_STAT_LINK) return S_IFLNK;
-    else if ((mode & FS_DEV_STAT_DIRECTORY) == FS_DEV_STAT_DIRECTORY)
+static mode_t fs_dev_translate_mode(FSStatFlags mode) {
+    if ((mode & FS_STAT_LINK) == FS_STAT_LINK) return S_IFLNK;
+    else if ((mode & FS_STAT_DIRECTORY) == FS_STAT_DIRECTORY)
         return S_IFDIR;
-    else if ((mode & FS_DEV_STAT_FILE) == FS_DEV_STAT_FILE)
+    else if ((mode & FS_STAT_FILE) == FS_STAT_FILE)
         return S_IFREG;
     else
         return 0;
 }
 
-static time_t fs_dev_translate_time(OSTime timeValue) {
+static time_t fs_dev_translate_time(FSTime timeValue) {
     OSCalendarTime fileTime;
     FSTimeToCalendarTime(timeValue, &fileTime);
     struct tm posixTime = {0};
@@ -241,7 +238,7 @@ static int fs_dev_open_r(struct _reent *r, void *fileStruct, const char *path, i
     free(real_path);
 
     if (result == 0) {
-        fileStat_s stats;
+        FSStat stats;
         result = IOSUHAX_FSA_StatFile(dev->fsaFd, fd, &stats);
         if (result != 0) {
             IOSUHAX_FSA_CloseFile(dev->fsaFd, fd);
@@ -404,7 +401,7 @@ static int fs_dev_fstat_r(struct _reent *r, void *fd, struct stat *st) {
     // Zero out the stat buffer
     memset(st, 0, sizeof(struct stat));
 
-    fileStat_s stats;
+    FSStat stats;
     int result = IOSUHAX_FSA_StatFile(file->dev->fsaFd, (int) fd, &stats);
     if (result != 0) {
         r->_errno = fs_dev_translate_error(result);
@@ -413,18 +410,18 @@ static int fs_dev_fstat_r(struct _reent *r, void *fd, struct stat *st) {
     }
 
     // Convert fields to posix stat
-    st->st_mode   = fs_dev_translate_mode(stats.flag);
+    st->st_mode   = fs_dev_translate_mode(stats.flags);
     st->st_size   = stats.size;
     st->st_blocks = (stats.size + 511) >> 9;
     st->st_nlink  = 1;
     // Fill in the generic entry stats
     st->st_dev   = (dev_t) file->dev;
-    st->st_uid   = stats.owner_id;
-    st->st_gid   = stats.group_id;
-    st->st_ino   = stats.id;
-    st->st_atime = fs_dev_translate_time(stats.mtime);
-    st->st_ctime = fs_dev_translate_time(stats.ctime);
-    st->st_mtime = fs_dev_translate_time(stats.mtime);
+    st->st_uid   = stats.owner;
+    st->st_gid   = stats.group;
+    st->st_ino   = stats.entryId;
+    st->st_atime = fs_dev_translate_time(stats.modified);
+    st->st_ctime = fs_dev_translate_time(stats.created);
+    st->st_mtime = fs_dev_translate_time(stats.modified);
     OSUnlockMutex(file->dev->pMutex);
     return 0;
 }
@@ -472,7 +469,7 @@ static int fs_dev_stat_r(struct _reent *r, const char *path, struct stat *st) {
         return -1;
     }
 
-    fileStat_s stats;
+    FSStat stats;
     int result = IOSUHAX_FSA_GetStat(dev->fsaFd, real_path, &stats);
 
     free(real_path);
@@ -484,18 +481,18 @@ static int fs_dev_stat_r(struct _reent *r, const char *path, struct stat *st) {
     }
 
     // Convert fields to posix stat
-    st->st_mode   = (strlen(dev->mount_path) + 1 == strlen(real_path)) ? S_IFDIR : fs_dev_translate_mode(stats.flag); // mark root as directory too
+    st->st_mode   = (strlen(dev->mount_path) + 1 == strlen(real_path)) ? S_IFDIR : fs_dev_translate_mode(stats.flags); // mark root as directory too
     st->st_nlink  = 1;
     st->st_size   = stats.size;
     st->st_blocks = (stats.size + 511) >> 9;
     // Fill in the generic entry stats
     st->st_dev   = (dev_t) dev;
-    st->st_uid   = stats.owner_id;
-    st->st_gid   = stats.group_id;
-    st->st_ino   = stats.id;
-    st->st_atime = fs_dev_translate_time(stats.mtime);
-    st->st_ctime = fs_dev_translate_time(stats.ctime);
-    st->st_mtime = fs_dev_translate_time(stats.mtime);
+    st->st_uid   = stats.owner;
+    st->st_gid   = stats.group;
+    st->st_ino   = stats.entryId;
+    st->st_atime = fs_dev_translate_time(stats.modified);
+    st->st_ctime = fs_dev_translate_time(stats.created);
+    st->st_mtime = fs_dev_translate_time(stats.modified);
 
     OSUnlockMutex(dev->pMutex);
 
@@ -815,7 +812,7 @@ static int fs_dev_dirnext_r(struct _reent *r, DIR_ITER *dirState, char *filename
 
     OSLockMutex(dirIter->dev->pMutex);
 
-    directoryEntry_s *dir_entry = malloc(sizeof(directoryEntry_s));
+    FSDirectoryEntry *dir_entry = malloc(sizeof(FSDirectoryEntry));
 
     int result = IOSUHAX_FSA_ReadDir(dirIter->dev->fsaFd, dirIter->dirHandle, dir_entry);
     if (result < 0) {
@@ -832,17 +829,17 @@ static int fs_dev_dirnext_r(struct _reent *r, DIR_ITER *dirState, char *filename
         memset(st, 0, sizeof(struct stat));
 
         // Convert fields to posix stat
-        st->st_mode   = fs_dev_translate_mode(dir_entry->stat.flag);
+        st->st_mode   = fs_dev_translate_mode(dir_entry->info.flags);
         st->st_nlink  = 1;
-        st->st_size   = dir_entry->stat.size;
-        st->st_blocks = (dir_entry->stat.size + 511) >> 9;
+        st->st_size   = dir_entry->info.allocSize;
+        st->st_blocks = (dir_entry->info.allocSize + 511) >> 9;
         st->st_dev    = (dev_t) dirIter->dev;
-        st->st_uid    = dir_entry->stat.owner_id;
-        st->st_gid    = dir_entry->stat.group_id;
-        st->st_ino    = dir_entry->stat.id;
-        st->st_atime  = fs_dev_translate_time(dir_entry->stat.mtime);
-        st->st_ctime  = fs_dev_translate_time(dir_entry->stat.ctime);
-        st->st_mtime  = fs_dev_translate_time(dir_entry->stat.mtime);
+        st->st_uid    = dir_entry->info.owner;
+        st->st_gid    = dir_entry->info.group;
+        st->st_ino    = dir_entry->info.entryId;
+        st->st_atime  = fs_dev_translate_time(dir_entry->info.modified);
+        st->st_ctime  = fs_dev_translate_time(dir_entry->info.created);
+        st->st_mtime  = fs_dev_translate_time(dir_entry->info.modified);
     }
 
     free(dir_entry);
