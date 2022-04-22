@@ -145,14 +145,42 @@ static int fs_dev_translate_error(FSStatus error) {
     return (int) error;
 }
 
-static mode_t fs_dev_translate_mode(FSStatFlags mode) {
-    if ((mode & FS_STAT_LINK) == FS_STAT_LINK) return S_IFLNK;
-    else if ((mode & FS_STAT_DIRECTORY) == FS_STAT_DIRECTORY)
-        return S_IFDIR;
-    else if ((mode & FS_STAT_FILE) == FS_STAT_FILE)
-        return S_IFREG;
-    else
-        return 0;
+static mode_t fs_dev_translate_mode(FSStat fileStat, bool followLinks, bool isRootDirectory) {
+    mode_t retMode = 0;
+
+    // Convert file types
+    if (isRootDirectory)
+        retMode |= S_IFDIR;
+    else if ((fileStat.flags & FS_STAT_LINK) == FS_STAT_LINK)
+        retMode |= S_IFLNK;
+    else if ((fileStat.flags & FS_STAT_DIRECTORY) == FS_STAT_DIRECTORY)
+        retMode |= S_IFDIR;
+    else if ((fileStat.flags & FS_STAT_FILE) == FS_STAT_FILE)
+        retMode |= S_IFREG;
+
+    // Convert file mode
+    if ((fileStat.mode & FS_MODE_READ_OWNER) == FS_MODE_READ_OWNER)
+        retMode |= S_IRUSR;
+    if ((fileStat.mode & FS_MODE_WRITE_OWNER) == FS_MODE_WRITE_OWNER)
+        retMode |= S_IWUSR;
+    if ((fileStat.mode & FS_MODE_EXEC_OWNER) == FS_MODE_EXEC_OWNER)
+        retMode |= S_IXUSR;
+
+    if ((fileStat.mode & FS_MODE_READ_GROUP) == FS_MODE_READ_GROUP)
+        retMode |= S_IRGRP;
+    if ((fileStat.mode & FS_MODE_WRITE_GROUP) == FS_MODE_WRITE_GROUP)
+        retMode |= S_IWGRP;
+    if ((fileStat.mode & FS_MODE_EXEC_GROUP) == FS_MODE_EXEC_GROUP)
+        retMode |= S_IXGRP;
+
+    if ((fileStat.mode & FS_MODE_READ_OTHER) == FS_MODE_READ_OTHER)
+        retMode |= S_IROTH;
+    if ((fileStat.mode & FS_MODE_WRITE_OTHER) == FS_MODE_WRITE_OTHER)
+        retMode |= S_IWOTH;
+    if ((fileStat.mode & FS_MODE_EXEC_OTHER) == FS_MODE_EXEC_OTHER)
+        retMode |= S_IXOTH;
+
+    return retMode;
 }
 
 static time_t fs_dev_translate_time(FSTime timeValue) {
@@ -410,44 +438,21 @@ static int fs_dev_fstat_r(struct _reent *r, void *fd, struct stat *st) {
     }
 
     // Convert fields to posix stat
-    st->st_mode   = fs_dev_translate_mode(stats.flags);
-    st->st_size   = stats.size;
-    st->st_blocks = (stats.size + 511) >> 9;
-    st->st_nlink  = 1;
-    // Fill in the generic entry stats
-    st->st_dev   = (dev_t) file->dev;
-    st->st_uid   = stats.owner;
-    st->st_gid   = stats.group;
-    st->st_ino   = stats.entryId;
-    st->st_atime = fs_dev_translate_time(stats.modified);
-    st->st_ctime = fs_dev_translate_time(stats.created);
-    st->st_mtime = fs_dev_translate_time(stats.modified);
+    st->st_dev     = (dev_t) file->dev;
+    st->st_ino     = stats.entryId;
+    st->st_mode    = fs_dev_translate_mode(stats, true, true);
+    st->st_nlink   = 1;
+    st->st_uid     = stats.owner;
+    st->st_gid     = stats.group;
+    st->st_rdev    = st->st_dev;
+    st->st_size    = stats.size;
+    st->st_blksize = 512;
+    st->st_blocks  = (st->st_size + st->st_blksize - 1) >> 9;
+    st->st_atime   = fs_dev_translate_time(stats.modified);
+    st->st_ctime   = fs_dev_translate_time(stats.created);
+    st->st_mtime   = fs_dev_translate_time(stats.modified);
     OSUnlockMutex(file->dev->pMutex);
     return 0;
-}
-
-static int fs_dev_ftruncate_r(struct _reent *r, void *fd, off_t len) {
-    fs_dev_file_state_t *file = (fs_dev_file_state_t *) fd;
-    if (!file->dev) {
-        r->_errno = ENODEV;
-        return -1;
-    }
-
-    r->_errno = ENOTSUP;
-    // TODO
-    return -1;
-}
-
-static int fs_dev_fsync_r(struct _reent *r, void *fd) {
-    fs_dev_file_state_t *file = (fs_dev_file_state_t *) fd;
-    if (!file->dev) {
-        r->_errno = ENODEV;
-        return -1;
-    }
-
-    r->_errno = ENOTSUP;
-    // TODO
-    return -1;
 }
 
 static int fs_dev_stat_r(struct _reent *r, const char *path, struct stat *st) {
@@ -471,9 +476,7 @@ static int fs_dev_stat_r(struct _reent *r, const char *path, struct stat *st) {
 
     FSStat stats;
     int result = IOSUHAX_FSA_GetStat(dev->fsaFd, real_path, &stats);
-
     free(real_path);
-
     if (result < 0) {
         r->_errno = fs_dev_translate_error(result);
         OSUnlockMutex(dev->pMutex);
@@ -481,21 +484,68 @@ static int fs_dev_stat_r(struct _reent *r, const char *path, struct stat *st) {
     }
 
     // Convert fields to posix stat
-    st->st_mode   = (strlen(dev->mount_path) + 1 == strlen(real_path)) ? S_IFDIR : fs_dev_translate_mode(stats.flags); // mark root as directory too
-    st->st_nlink  = 1;
-    st->st_size   = stats.size;
-    st->st_blocks = (stats.size + 511) >> 9;
-    // Fill in the generic entry stats
-    st->st_dev   = (dev_t) dev;
-    st->st_uid   = stats.owner;
-    st->st_gid   = stats.group;
-    st->st_ino   = stats.entryId;
-    st->st_atime = fs_dev_translate_time(stats.modified);
-    st->st_ctime = fs_dev_translate_time(stats.created);
-    st->st_mtime = fs_dev_translate_time(stats.modified);
+    st->st_dev     = (dev_t) dev;
+    st->st_ino     = stats.entryId;
+    st->st_mode    = fs_dev_translate_mode(stats, true, (strlen(dev->mount_path) + 1 == strlen(real_path)));
+    st->st_nlink   = 1;
+    st->st_uid     = stats.owner;
+    st->st_gid     = stats.group;
+    st->st_rdev    = st->st_dev;
+    st->st_size    = stats.size;
+    st->st_blksize = 512;
+    st->st_blocks  = (st->st_size + st->st_blksize - 1) >> 9;
+    st->st_atime   = fs_dev_translate_time(stats.modified);
+    st->st_ctime   = fs_dev_translate_time(stats.created);
+    st->st_mtime   = fs_dev_translate_time(stats.modified);
 
     OSUnlockMutex(dev->pMutex);
+    return 0;
+}
 
+static int fs_dev_lstat_r(struct _reent *r, const char *path, struct stat *st) {
+    fs_dev_private_t *dev = fs_dev_get_device_data(path);
+    if (!dev) {
+        r->_errno = ENODEV;
+        return -1;
+    }
+
+    OSLockMutex(dev->pMutex);
+
+    // Zero out the stat buffer
+    memset(st, 0, sizeof(struct stat));
+
+    char *real_path = fs_dev_real_path(path, dev);
+    if (!real_path) {
+        r->_errno = ENOMEM;
+        OSUnlockMutex(dev->pMutex);
+        return -1;
+    }
+
+    FSStat stats;
+    int result = IOSUHAX_FSA_GetStat(dev->fsaFd, real_path, &stats);
+    free(real_path);
+    if (result < 0) {
+        r->_errno = fs_dev_translate_error(result);
+        OSUnlockMutex(dev->pMutex);
+        return -1;
+    }
+
+    // Convert fields to posix stat
+    st->st_dev     = (dev_t) dev;
+    st->st_ino     = stats.entryId;
+    st->st_mode    = fs_dev_translate_mode(stats, true, false);
+    st->st_nlink   = 1;
+    st->st_uid     = stats.owner;
+    st->st_gid     = stats.group;
+    st->st_rdev    = st->st_dev;
+    st->st_size    = stats.size;
+    st->st_blksize = 512;
+    st->st_blocks  = (st->st_size + st->st_blksize - 1) >> 9;
+    st->st_atime   = fs_dev_translate_time(stats.modified);
+    st->st_ctime   = fs_dev_translate_time(stats.created);
+    st->st_mtime   = fs_dev_translate_time(stats.modified);
+
+    OSUnlockMutex(dev->pMutex);
     return 0;
 }
 
@@ -633,7 +683,7 @@ static int fs_dev_mkdir_r(struct _reent *r, const char *path, int mode) {
     return 0;
 }
 
-static int fs_dev_chmod_r(struct _reent *r, const char *path, int mode) {
+static int fs_dev_chmod_r(struct _reent *r, const char *path, mode_t mode) {
     fs_dev_private_t *dev = fs_dev_get_device_data(path);
     if (!dev) {
         r->_errno = ENODEV;
@@ -829,17 +879,19 @@ static int fs_dev_dirnext_r(struct _reent *r, DIR_ITER *dirState, char *filename
         memset(st, 0, sizeof(struct stat));
 
         // Convert fields to posix stat
-        st->st_mode   = fs_dev_translate_mode(dir_entry->info.flags);
-        st->st_nlink  = 1;
-        st->st_size   = dir_entry->info.allocSize;
-        st->st_blocks = (dir_entry->info.allocSize + 511) >> 9;
-        st->st_dev    = (dev_t) dirIter->dev;
-        st->st_uid    = dir_entry->info.owner;
-        st->st_gid    = dir_entry->info.group;
-        st->st_ino    = dir_entry->info.entryId;
-        st->st_atime  = fs_dev_translate_time(dir_entry->info.modified);
-        st->st_ctime  = fs_dev_translate_time(dir_entry->info.created);
-        st->st_mtime  = fs_dev_translate_time(dir_entry->info.modified);
+        st->st_dev     = (dev_t) dirIter->dev;
+        st->st_ino     = dir_entry->info.entryId;
+        st->st_mode    = fs_dev_translate_mode(dir_entry->info, true, false);
+        st->st_nlink   = 1;
+        st->st_uid     = dir_entry->info.owner;
+        st->st_gid     = dir_entry->info.group;
+        st->st_rdev    = st->st_dev;
+        st->st_size    = dir_entry->info.size;
+        st->st_blksize = 512;
+        st->st_blocks  = (st->st_size + st->st_blksize - 1) >> 9;
+        st->st_atime   = fs_dev_translate_time(dir_entry->info.modified);
+        st->st_ctime   = fs_dev_translate_time(dir_entry->info.created);
+        st->st_mtime   = fs_dev_translate_time(dir_entry->info.modified);
     }
 
     free(dir_entry);
@@ -849,31 +901,34 @@ static int fs_dev_dirnext_r(struct _reent *r, DIR_ITER *dirState, char *filename
 
 // NTFS device driver devoptab
 static const devoptab_t devops_fs = {
-        NULL, /* Device name */
-        sizeof(fs_dev_file_state_t),
-        fs_dev_open_r,
-        fs_dev_close_r,
-        fs_dev_write_r,
-        fs_dev_read_r,
-        fs_dev_seek_r,
-        fs_dev_fstat_r,
-        fs_dev_stat_r,
-        fs_dev_link_r,
-        fs_dev_unlink_r,
-        fs_dev_chdir_r,
-        fs_dev_rename_r,
-        fs_dev_mkdir_r,
-        sizeof(fs_dev_dir_entry_t),
-        fs_dev_diropen_r,
-        fs_dev_dirreset_r,
-        fs_dev_dirnext_r,
-        fs_dev_dirclose_r,
-        fs_dev_statvfs_r,
-        fs_dev_ftruncate_r,
-        fs_dev_fsync_r,
-        fs_dev_chmod_r,
-        NULL, /* fs_dev_fchmod_r */
-        NULL  /* Device data */
+        .name         = NULL, /* Device name */
+        .structSize   = sizeof(fs_dev_file_state_t),
+        .open_r       = fs_dev_open_r,
+        .close_r      = fs_dev_close_r,
+        .write_r      = fs_dev_write_r,
+        .read_r       = fs_dev_read_r,
+        .seek_r       = fs_dev_seek_r,
+        .fstat_r      = fs_dev_fstat_r,
+        .stat_r       = fs_dev_stat_r,
+        .link_r       = fs_dev_link_r,
+        .unlink_r     = fs_dev_unlink_r,
+        .chdir_r      = fs_dev_chdir_r,
+        .rename_r     = fs_dev_rename_r,
+        .mkdir_r      = fs_dev_mkdir_r,
+        .dirStateSize = sizeof(fs_dev_dir_entry_t),
+        .diropen_r    = fs_dev_diropen_r,
+        .dirreset_r   = fs_dev_dirreset_r,
+        .dirnext_r    = fs_dev_dirnext_r,
+        .dirclose_r   = fs_dev_dirclose_r,
+        .statvfs_r    = fs_dev_statvfs_r,
+        .ftruncate_r  = NULL, // fs_dev_ftruncate_r,
+        .fsync_r      = NULL, // fs_dev_fsync_r,
+        .deviceData   = NULL,
+        .chmod_r      = fs_dev_chmod_r,
+        .fchmod_r     = NULL, // fs_dev_fchmod_r,
+        .rmdir_r      = NULL, // fs_dev_rmdir_r,
+        .lstat_r      = fs_dev_lstat_r,
+        .utimes_r     = NULL,
 };
 
 static int fs_dev_add_device(const char *name, const char *mount_path, int fsaFd, int isMounted) {
