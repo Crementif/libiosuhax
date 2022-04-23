@@ -149,36 +149,46 @@ static mode_t fs_dev_translate_mode(FSStat fileStat, bool followLinks, bool isRo
     mode_t retMode = 0;
 
     // Convert file types
-    if (isRootDirectory)
+    if (isRootDirectory) {
         retMode |= S_IFDIR;
-    else if ((fileStat.flags & FS_STAT_LINK) == FS_STAT_LINK)
+    } else if ((fileStat.flags & FS_STAT_LINK) == FS_STAT_LINK) {
         retMode |= S_IFLNK;
-    else if ((fileStat.flags & FS_STAT_DIRECTORY) == FS_STAT_DIRECTORY)
+    } else if ((fileStat.flags & FS_STAT_DIRECTORY) == FS_STAT_DIRECTORY) {
         retMode |= S_IFDIR;
-    else if ((fileStat.flags & FS_STAT_FILE) == FS_STAT_FILE)
+    } else if ((fileStat.flags & FS_STAT_FILE) == FS_STAT_FILE) {
         retMode |= S_IFREG;
+    }
 
     // Convert file mode
-    if ((fileStat.mode & FS_MODE_READ_OWNER) == FS_MODE_READ_OWNER)
+    if ((fileStat.mode & FS_MODE_READ_OWNER) == FS_MODE_READ_OWNER) {
         retMode |= S_IRUSR;
-    if ((fileStat.mode & FS_MODE_WRITE_OWNER) == FS_MODE_WRITE_OWNER)
+    }
+    if ((fileStat.mode & FS_MODE_WRITE_OWNER) == FS_MODE_WRITE_OWNER) {
         retMode |= S_IWUSR;
-    if ((fileStat.mode & FS_MODE_EXEC_OWNER) == FS_MODE_EXEC_OWNER)
+    }
+    if ((fileStat.mode & FS_MODE_EXEC_OWNER) == FS_MODE_EXEC_OWNER) {
         retMode |= S_IXUSR;
+    }
 
-    if ((fileStat.mode & FS_MODE_READ_GROUP) == FS_MODE_READ_GROUP)
+    if ((fileStat.mode & FS_MODE_READ_GROUP) == FS_MODE_READ_GROUP) {
         retMode |= S_IRGRP;
-    if ((fileStat.mode & FS_MODE_WRITE_GROUP) == FS_MODE_WRITE_GROUP)
+    }
+    if ((fileStat.mode & FS_MODE_WRITE_GROUP) == FS_MODE_WRITE_GROUP) {
         retMode |= S_IWGRP;
-    if ((fileStat.mode & FS_MODE_EXEC_GROUP) == FS_MODE_EXEC_GROUP)
+    }
+    if ((fileStat.mode & FS_MODE_EXEC_GROUP) == FS_MODE_EXEC_GROUP) {
         retMode |= S_IXGRP;
+    }
 
-    if ((fileStat.mode & FS_MODE_READ_OTHER) == FS_MODE_READ_OTHER)
+    if ((fileStat.mode & FS_MODE_READ_OTHER) == FS_MODE_READ_OTHER) {
         retMode |= S_IROTH;
-    if ((fileStat.mode & FS_MODE_WRITE_OTHER) == FS_MODE_WRITE_OTHER)
+    }
+    if ((fileStat.mode & FS_MODE_WRITE_OTHER) == FS_MODE_WRITE_OTHER) {
         retMode |= S_IWOTH;
-    if ((fileStat.mode & FS_MODE_EXEC_OTHER) == FS_MODE_EXEC_OTHER)
+    }
+    if ((fileStat.mode & FS_MODE_EXEC_OTHER) == FS_MODE_EXEC_OTHER) {
         retMode |= S_IXOTH;
+    }
 
     return retMode;
 }
@@ -447,7 +457,7 @@ static int fs_dev_fstat_r(struct _reent *r, void *fd, struct stat *st) {
     st->st_rdev    = st->st_dev;
     st->st_size    = stats.size;
     st->st_blksize = 512;
-    st->st_blocks  = (st->st_size + st->st_blksize - 1) >> 9;
+    st->st_blocks  = (st->st_size + st->st_blksize - 1) / st->st_blksize;
     st->st_atime   = fs_dev_translate_time(stats.modified);
     st->st_ctime   = fs_dev_translate_time(stats.created);
     st->st_mtime   = fs_dev_translate_time(stats.modified);
@@ -493,7 +503,7 @@ static int fs_dev_stat_r(struct _reent *r, const char *path, struct stat *st) {
     st->st_rdev    = st->st_dev;
     st->st_size    = stats.size;
     st->st_blksize = 512;
-    st->st_blocks  = (st->st_size + st->st_blksize - 1) >> 9;
+    st->st_blocks  = (st->st_size + st->st_blksize - 1) / st->st_blksize;
     st->st_atime   = fs_dev_translate_time(stats.modified);
     st->st_ctime   = fs_dev_translate_time(stats.created);
     st->st_mtime   = fs_dev_translate_time(stats.modified);
@@ -540,7 +550,7 @@ static int fs_dev_lstat_r(struct _reent *r, const char *path, struct stat *st) {
     st->st_rdev    = st->st_dev;
     st->st_size    = stats.size;
     st->st_blksize = 512;
-    st->st_blocks  = (st->st_size + st->st_blksize - 1) >> 9;
+    st->st_blocks  = (st->st_size + st->st_blksize - 1) / st->st_blksize;
     st->st_atime   = fs_dev_translate_time(stats.modified);
     st->st_ctime   = fs_dev_translate_time(stats.created);
     st->st_mtime   = fs_dev_translate_time(stats.modified);
@@ -888,7 +898,7 @@ static int fs_dev_dirnext_r(struct _reent *r, DIR_ITER *dirState, char *filename
         st->st_rdev    = st->st_dev;
         st->st_size    = dir_entry->info.size;
         st->st_blksize = 512;
-        st->st_blocks  = (st->st_size + st->st_blksize - 1) >> 9;
+        st->st_blocks  = (st->st_size + st->st_blksize - 1) / st->st_blksize;
         st->st_atime   = fs_dev_translate_time(dir_entry->info.modified);
         st->st_ctime   = fs_dev_translate_time(dir_entry->info.created);
         st->st_mtime   = fs_dev_translate_time(dir_entry->info.modified);
@@ -899,7 +909,6 @@ static int fs_dev_dirnext_r(struct _reent *r, DIR_ITER *dirState, char *filename
     return 0;
 }
 
-// NTFS device driver devoptab
 static const devoptab_t devops_fs = {
         .name         = NULL, /* Device name */
         .structSize   = sizeof(fs_dev_file_state_t),
