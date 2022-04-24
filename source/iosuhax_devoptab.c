@@ -450,7 +450,7 @@ static int fs_dev_fstat_r(struct _reent *r, void *fd, struct stat *st) {
     // Convert fields to posix stat
     st->st_dev     = (dev_t) file->dev;
     st->st_ino     = stats.entryId;
-    st->st_mode    = fs_dev_translate_mode(stats, true, true);
+    st->st_mode    = fs_dev_translate_mode(stats, true, false);
     st->st_nlink   = 1;
     st->st_uid     = stats.owner;
     st->st_gid     = stats.group;
@@ -543,7 +543,7 @@ static int fs_dev_lstat_r(struct _reent *r, const char *path, struct stat *st) {
     // Convert fields to posix stat
     st->st_dev     = (dev_t) dev;
     st->st_ino     = stats.entryId;
-    st->st_mode    = fs_dev_translate_mode(stats, true, false);
+    st->st_mode    = fs_dev_translate_mode(stats, false, (strlen(dev->mount_path) + 1 == strlen(real_path)));
     st->st_nlink   = 1;
     st->st_uid     = stats.owner;
     st->st_gid     = stats.group;
