@@ -33,8 +33,9 @@ INCLUDES	:=	source \
 #---------------------------------------------------------------------------------
 # options for code generation
 #---------------------------------------------------------------------------------
-CFLAGS	:=	-Wall -Werror -save-temps \
+CFLAGS	:=	-Wall -Werror -pipe -Ofast \
 			-ffunction-sections -fdata-sections \
+			-flto=auto -fno-fat-lto-objects -fuse-linker-plugin \
 			$(MACHDEP) \
 			$(BUILD_CFLAGS)
 
@@ -44,7 +45,7 @@ CXXFLAGS	:= $(CFLAGS) -std=gnu++17
 
 ASFLAGS	:=	$(MACHDEP)
 
-LDFLAGS	=	$(ARCH) -Wl,--gc-sections
+LDFLAGS	=	$(ARCH) -Wl,--gc-sections -flto=auto -fno-fat-lto-objects -fuse-linker-plugin
 
 
 LIBS	:= 
