@@ -44,6 +44,7 @@ typedef struct _fs_dev_private_t {
     char *mount_path;
     int fsaFd;
     int mounted;
+    bool extended;
     void *pMutex;
 } fs_dev_private_t;
 
@@ -176,6 +177,42 @@ static FSMode fs_dev_translate_permission_mode(mode_t mode) {
     return (FSMode) (((mode & S_IRWXU) << 2) | ((mode & S_IRWXG) << 1) | (mode & S_IRWXO));
 }
 
+static uint32_t fs_dev_translate_open_mode(int create_mode) {
+    uint32_t retMode = 0;
+
+    if ((create_mode & S_IRUSR) == S_IRUSR) {
+        retMode |= FS_MODE_READ_OWNER;
+    }
+    if ((create_mode & S_IWUSR) == S_IWUSR) {
+        retMode |= FS_MODE_WRITE_OWNER;
+    }
+    if ((create_mode & S_IXUSR) == S_IXUSR) {
+        retMode |= FS_MODE_EXEC_OWNER;
+    }
+
+    if ((create_mode & S_IRGRP) == S_IRGRP) {
+        retMode |= FS_MODE_READ_GROUP;
+    }
+    if ((create_mode & S_IWGRP) == S_IWGRP) {
+        retMode |= FS_MODE_WRITE_GROUP;
+    }
+    if ((create_mode & S_IXGRP) == S_IXGRP) {
+        retMode |= FS_MODE_EXEC_GROUP;
+    }
+
+    if ((create_mode & S_IROTH) == S_IROTH) {
+        retMode |= FS_MODE_READ_OTHER;
+    }
+    if ((create_mode & S_IWOTH) == S_IWOTH) {
+        retMode |= FS_MODE_WRITE_OTHER;
+    }
+    if ((create_mode & S_IXOTH) == S_IXOTH) {
+        retMode |= FS_MODE_EXEC_OTHER;
+    }
+
+    return retMode;
+}
+
 static time_t fs_dev_translate_time(FSTime timeValue) {
     OSCalendarTime fileTime;
     FSTimeToCalendarTime(timeValue, &fileTime);
@@ -228,7 +265,6 @@ static int fs_dev_open_r(struct _reent *r, void *fileStruct, const char *path, i
     }
 
     OSLockMutex(dev->pMutex);
-
     char *real_path = fs_dev_real_path(path, dev);
     if (!path) {
         r->_errno = ENOMEM;
@@ -237,12 +273,17 @@ static int fs_dev_open_r(struct _reent *r, void *fileStruct, const char *path, i
     }
     strcpy(file->path, real_path);
 
-    int fd = -1;
-    int result;
-    if ((flags & O_OPEN_ENCRYPTED) == O_OPEN_ENCRYPTED) {
-        result = IOSUHAX_FSA_OpenFileEx(dev->fsaFd, real_path, fsMode, &fd, FSA_OPENFLAGS_OPEN_ENCRYPTED, NULL, NULL);
+    bool openEncrypted = (flags & O_OPEN_ENCRYPTED) == O_OPEN_ENCRYPTED;
+
+    int fd     = -1;
+    int result = 0;
+    // cache whether IOSUHAX_FSA_OpenFileEx is supported to prevent older iosuhax implementations from being slower
+    // older implementations aren't able to open encrypted files or create files with a specified mode
+    if (dev->extended) {
+        result = IOSUHAX_FSA_OpenFileEx(dev->fsaFd, real_path, fsMode, &fd, fs_dev_translate_open_mode(mode), openEncrypted ? FSA_OPENFLAGS_OPEN_ENCRYPTED : FSA_OPENFLAGS_NONE, 0);
+        if (result == IOS_ERROR_INVALID_ARG) dev->extended = false;
     }
-    else {
+    if (!dev->extended) {
         result = IOSUHAX_FSA_OpenFile(dev->fsaFd, real_path, fsMode, &fd);
     }
     free(real_path);
@@ -796,16 +837,7 @@ static int fs_dev_fchmod_r(struct _reent *r, void *fd, mode_t mode) {
     }
 
     OSLockMutex(file->dev->pMutex);
-
-    char *real_path = fs_dev_real_path(file->path, file->dev);
-    if (!real_path) {
-        r->_errno = ENOMEM;
-        OSUnlockMutex(file->dev->pMutex);
-        return -1;
-    }
-
-    int result = IOSUHAX_FSA_ChangeMode(file->dev->fsaFd, real_path, mode);
-    free(real_path);
+    int result = IOSUHAX_FSA_ChangeMode(file->dev->fsaFd, file->path, mode);
     OSUnlockMutex(file->dev->pMutex);
 
     if (result < 0) {
@@ -850,13 +882,13 @@ static int fs_dev_statvfs_r(struct _reent *r, const char *path, struct statvfs *
     // Fundamental file system block size
     buf->f_frsize = 512;
     // Total number of blocks on file system in units of f_frsize
-    buf->f_blocks = deviceSize >> 9; // this is unknown
+    buf->f_blocks = deviceSize / buf->f_frsize; // this is unknown
     // Free blocks available for all and for non-privileged processes
-    buf->f_bfree = buf->f_bavail = deviceSize >> 9;
+    buf->f_bfree = buf->f_bavail = deviceSize / buf->f_frsize;
     // Number of inodes at this point in time
-    buf->f_files = 0xffffffff;
+    buf->f_files = 0xFFFFFFFF;
     // Free inodes available for all and for non-privileged processes
-    buf->f_ffree = 0xffffffff;
+    buf->f_ffree = 0xFFFFFFFF;
     // File system id
     buf->f_fsid = (int) dev;
     // Bit mask of f_flag values.
@@ -1054,6 +1086,9 @@ static int fs_dev_add_device(const char *name, const char *mount_path, int fsaFd
     priv->fsaFd      = fsaFd;
     priv->mounted    = isMounted;
     priv->pMutex     = malloc(OS_MUTEX_SIZE);
+
+    // assume that the iosuhax implementation supports extended commands by default
+    priv->extended = true;
 
     if (!priv->pMutex) {
         free(dev);
