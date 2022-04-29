@@ -852,7 +852,7 @@ int IOSUHAX_FSA_OpenFile(int fsaFd, const char *path, const char *mode, int *out
     return result_vec[0];
 }
 
-int IOSUHAX_FSA_OpenFileEx(int fsaFd, const char *path, const char *mode, int *outHandle, uint32_t flags, int create_mode, uint32_t create_alloc_size) {
+int IOSUHAX_FSA_OpenFileEx(int fsaFd, const char *path, const char *mode, int *outHandle, uint32_t create_mode, uint32_t flags, uint32_t prealloc_size) {
     if (iosuhaxHandle < 0)
         return iosuhaxHandle;
 
@@ -867,9 +867,9 @@ int IOSUHAX_FSA_OpenFileEx(int fsaFd, const char *path, const char *mode, int *o
     io_buf[0] = fsaFd;
     io_buf[1] = sizeof(uint32_t) * input_cnt;
     io_buf[2] = io_buf[1] + strlen(path) + 1;
-    io_buf[3] = flags;
-    io_buf[4] = create_mode;
-    io_buf[5] = create_alloc_size;
+    io_buf[3] = create_mode;
+    io_buf[4] = flags;
+    io_buf[5] = prealloc_size;
     strcpy(((char *) io_buf) + io_buf[1], path);
     strcpy(((char *) io_buf) + io_buf[2], mode);
 

@@ -23,6 +23,7 @@
  ***************************************************************************/
 #pragma once
 
+#include <assert.h>
 #include <coreinit/filesystem.h>
 #include <stdint.h>
 
@@ -45,22 +46,29 @@ extern "C" {
 #define FSA_OPENFLAGS_OPEN_ENCRYPTED (1 << 0)
 #define FSA_OPENFLAGS_PREALLOC_SPACE (1 << 1)
 
-// Flags for devoptab's "open" function that'll be converted to the above flags
+// Flags for posix "open" function to use OPEN_ENCRYPTED flag
 #define O_OPEN_ENCRYPTED             0x4000000
+
 
 typedef struct {
     uint8_t unknown[0x1E];
-} FSFileSystemInfo;
+} __attribute__((packed)) FSFileSystemInfo;
+static_assert(sizeof(FSFileSystemInfo) == 0x1E, "FSFileSystemInfo struct is not 0x1E bytes!");
 
 typedef struct {
-    uint8_t unknown[0x28];
-} FSDeviceInfo;
+    uint8_t unknown1[0x8];
+    uint64_t deviceSizeInSectors;
+    uint32_t deviceSectorSize;
+    uint8_t unknown2[0x14];
+} __attribute__((packed)) FSDeviceInfo;
+static_assert(sizeof(FSDeviceInfo) == 0x28, "FSDeviceInfo struct is not 0x28 bytes!");
 
 typedef struct {
     uint64_t blocks_count;
     uint64_t some_count;
     uint32_t block_size;
-} FSBlockInfo;
+} __attribute__((packed)) FSBlockInfo;
+static_assert(sizeof(FSBlockInfo) == 0x14, "FSBlockInfo struct is not 0x14 bytes!");
 
 int IOSUHAX_Open(const char *dev); // if dev == NULL the default path /dev/iosuhax will be used
 int IOSUHAX_Close(void);
@@ -108,7 +116,7 @@ int IOSUHAX_FSA_RollbackQuota(int fsaFd, const char *quota_path);
 int IOSUHAX_FSA_RollbackQuotaForce(int fsaFd, const char *quota_path);
 
 int IOSUHAX_FSA_OpenFile(int fsaFd, const char *path, const char *mode, int *outHandle);
-int IOSUHAX_FSA_OpenFileEx(int fsaFd, const char *path, const char *mode, int *outHandle, uint32_t flags, int create_mode, uint32_t create_alloc_size);
+int IOSUHAX_FSA_OpenFileEx(int fsaFd, const char *path, const char *mode, int *outHandle, uint32_t create_mode, uint32_t flags, uint32_t prealloc_size);
 int IOSUHAX_FSA_ReadFile(int fsaFd, void *data, uint32_t size, uint32_t cnt, int fileHandle, uint32_t flags);
 int IOSUHAX_FSA_WriteFile(int fsaFd, const void *data, uint32_t size, uint32_t cnt, int fileHandle, uint32_t flags);
 int IOSUHAX_FSA_ReadFileWithPos(int fsaFd, void *data, uint32_t size, uint32_t cnt, uint32_t pos, int fileHandle, uint32_t flags);
