@@ -153,88 +153,28 @@ static int fs_dev_translate_error(FSStatus error) {
     return (int) error;
 }
 
-static mode_t fs_dev_translate_mode(FSStat fileStat, bool followLinks, bool isRootDirectory) {
-    mode_t retMode = 0;
-
+static mode_t fs_dev_translate_stat_mode(FSStat fileStat, bool followLinks, bool isRootDirectory) {
     // Convert file types
+    mode_t typeMode = 0;
     if (isRootDirectory) {
-        retMode |= S_IFDIR;
+        typeMode |= S_IFDIR;
     } else if ((fileStat.flags & FS_STAT_LINK) == FS_STAT_LINK) {
-        retMode |= S_IFLNK;
+        typeMode |= S_IFLNK;
     } else if ((fileStat.flags & FS_STAT_DIRECTORY) == FS_STAT_DIRECTORY) {
-        retMode |= S_IFDIR;
+        typeMode |= S_IFDIR;
     } else if ((fileStat.flags & FS_STAT_FILE) == FS_STAT_FILE) {
-        retMode |= S_IFREG;
+        typeMode |= S_IFREG;
     }
 
-    // Convert file mode
-    if ((fileStat.mode & FS_MODE_READ_OWNER) == FS_MODE_READ_OWNER) {
-        retMode |= S_IRUSR;
-    }
-    if ((fileStat.mode & FS_MODE_WRITE_OWNER) == FS_MODE_WRITE_OWNER) {
-        retMode |= S_IWUSR;
-    }
-    if ((fileStat.mode & FS_MODE_EXEC_OWNER) == FS_MODE_EXEC_OWNER) {
-        retMode |= S_IXUSR;
-    }
+    // Convert normal CafeOS hexadecimal permission bits into Unix octal permission bits
+    mode_t permissionMode = (((fileStat.mode >> 2) & S_IRWXU) | ((fileStat.mode >> 1) & S_IRWXG) | (fileStat.mode & S_IRWXO));
 
-    if ((fileStat.mode & FS_MODE_READ_GROUP) == FS_MODE_READ_GROUP) {
-        retMode |= S_IRGRP;
-    }
-    if ((fileStat.mode & FS_MODE_WRITE_GROUP) == FS_MODE_WRITE_GROUP) {
-        retMode |= S_IWGRP;
-    }
-    if ((fileStat.mode & FS_MODE_EXEC_GROUP) == FS_MODE_EXEC_GROUP) {
-        retMode |= S_IXGRP;
-    }
-
-    if ((fileStat.mode & FS_MODE_READ_OTHER) == FS_MODE_READ_OTHER) {
-        retMode |= S_IROTH;
-    }
-    if ((fileStat.mode & FS_MODE_WRITE_OTHER) == FS_MODE_WRITE_OTHER) {
-        retMode |= S_IWOTH;
-    }
-    if ((fileStat.mode & FS_MODE_EXEC_OTHER) == FS_MODE_EXEC_OTHER) {
-        retMode |= S_IXOTH;
-    }
-
-    return retMode;
+    return typeMode | permissionMode;
 }
 
-static uint32_t fs_dev_translate_open_mode(int create_mode) {
-    uint32_t retMode = 0;
-
-    if ((create_mode & S_IRUSR) == S_IRUSR) {
-        retMode |= FS_MODE_READ_OWNER;
-    }
-    if ((create_mode & S_IWUSR) == S_IWUSR) {
-        retMode |= FS_MODE_WRITE_OWNER;
-    }
-    if ((create_mode & S_IXUSR) == S_IXUSR) {
-        retMode |= FS_MODE_EXEC_OWNER;
-    }
-
-    if ((create_mode & S_IRGRP) == S_IRGRP) {
-        retMode |= FS_MODE_READ_GROUP;
-    }
-    if ((create_mode & S_IWGRP) == S_IWGRP) {
-        retMode |= FS_MODE_WRITE_GROUP;
-    }
-    if ((create_mode & S_IXGRP) == S_IXGRP) {
-        retMode |= FS_MODE_EXEC_GROUP;
-    }
-
-    if ((create_mode & S_IROTH) == S_IROTH) {
-        retMode |= FS_MODE_READ_OTHER;
-    }
-    if ((create_mode & S_IWOTH) == S_IWOTH) {
-        retMode |= FS_MODE_WRITE_OTHER;
-    }
-    if ((create_mode & S_IXOTH) == S_IXOTH) {
-        retMode |= FS_MODE_EXEC_OTHER;
-    }
-
-    return retMode;
+static FSMode fs_dev_translate_permission_mode(mode_t mode) {
+    // Convert normal Unix octal permission bits into CafeOS hexadecimal permission bits
+    return (FSMode) (((mode & S_IRWXU) << 2) | ((mode & S_IRWXG) << 1) | (mode & S_IRWXO));
 }
 
 static time_t fs_dev_translate_time(FSTime timeValue) {
@@ -304,7 +244,7 @@ static int fs_dev_open_r(struct _reent *r, void *fileStruct, const char *path, i
     // cache whether IOSUHAX_FSA_OpenFileEx is supported to prevent older iosuhax implementations from being slower
     // older implementations aren't able to open encrypted files or create files with a specified mode
     if (dev->extended) {
-        result = IOSUHAX_FSA_OpenFileEx(dev->fsaFd, real_path, fsMode, &fd, fs_dev_translate_open_mode(mode), openEncrypted ? FSA_OPENFLAGS_OPEN_ENCRYPTED : FSA_OPENFLAGS_NONE, 0);
+        result = IOSUHAX_FSA_OpenFileEx(dev->fsaFd, real_path, fsMode, &fd, fs_dev_translate_permission_mode(mode), openEncrypted ? FSA_OPENFLAGS_OPEN_ENCRYPTED : FSA_OPENFLAGS_NONE, 0);
         if (result == IOS_ERROR_INVALID_ARG) dev->extended = false;
     }
     if (!dev->extended) {
@@ -521,7 +461,7 @@ static int fs_dev_fstat_r(struct _reent *r, void *fd, struct stat *st) {
     // Convert fields to posix stat
     st->st_dev     = (dev_t) file->dev;
     st->st_ino     = stats.entryId;
-    st->st_mode    = fs_dev_translate_mode(stats, true, false);
+    st->st_mode    = fs_dev_translate_stat_mode(stats, true, false);
     st->st_nlink   = 1;
     st->st_uid     = stats.owner;
     st->st_gid     = stats.group;
@@ -567,7 +507,7 @@ static int fs_dev_stat_r(struct _reent *r, const char *path, struct stat *st) {
     // Convert fields to posix stat
     st->st_dev     = (dev_t) dev;
     st->st_ino     = stats.entryId;
-    st->st_mode    = fs_dev_translate_mode(stats, true, (strlen(dev->mount_path) + 1 == strlen(real_path)));
+    st->st_mode    = fs_dev_translate_stat_mode(stats, true, (strlen(dev->mount_path) + 1 == strlen(real_path)));
     st->st_nlink   = 1;
     st->st_uid     = stats.owner;
     st->st_gid     = stats.group;
@@ -614,7 +554,7 @@ static int fs_dev_lstat_r(struct _reent *r, const char *path, struct stat *st) {
     // Convert fields to posix stat
     st->st_dev     = (dev_t) dev;
     st->st_ino     = stats.entryId;
-    st->st_mode    = fs_dev_translate_mode(stats, false, (strlen(dev->mount_path) + 1 == strlen(real_path)));
+    st->st_mode    = fs_dev_translate_stat_mode(stats, false, (strlen(dev->mount_path) + 1 == strlen(real_path)));
     st->st_nlink   = 1;
     st->st_uid     = stats.owner;
     st->st_gid     = stats.group;
@@ -811,7 +751,7 @@ static int fs_dev_mkdir_r(struct _reent *r, const char *path, int mode) {
         return -1;
     }
 
-    int result = IOSUHAX_FSA_MakeDir(dev->fsaFd, real_path, mode);
+    int result = IOSUHAX_FSA_MakeDir(dev->fsaFd, real_path, fs_dev_translate_permission_mode(mode));
     free(real_path);
     OSUnlockMutex(dev->pMutex);
 
@@ -839,7 +779,7 @@ static int fs_dev_chmod_r(struct _reent *r, const char *path, mode_t mode) {
         return -1;
     }
 
-    int result = IOSUHAX_FSA_ChangeMode(dev->fsaFd, real_path, mode);
+    int result = IOSUHAX_FSA_ChangeMode(dev->fsaFd, real_path, fs_dev_translate_permission_mode(mode));
     free(real_path);
     OSUnlockMutex(dev->pMutex);
 
@@ -859,7 +799,7 @@ static int fs_dev_fchmod_r(struct _reent *r, void *fd, mode_t mode) {
     }
 
     OSLockMutex(file->dev->pMutex);
-    int result = IOSUHAX_FSA_ChangeMode(file->dev->fsaFd, file->path, mode);
+    int result = IOSUHAX_FSA_ChangeMode(file->dev->fsaFd, file->path, fs_dev_translate_permission_mode(mode));
     OSUnlockMutex(file->dev->pMutex);
 
     if (result < 0) {
@@ -1020,7 +960,7 @@ static int fs_dev_dirnext_r(struct _reent *r, DIR_ITER *dirState, char *filename
         // Convert fields to posix stat
         st->st_dev     = (dev_t) dirIter->dev;
         st->st_ino     = dir_entry->info.entryId;
-        st->st_mode    = fs_dev_translate_mode(dir_entry->info, true, false);
+        st->st_mode    = fs_dev_translate_stat_mode(dir_entry->info, true, false);
         st->st_nlink   = 1;
         st->st_uid     = dir_entry->info.owner;
         st->st_gid     = dir_entry->info.group;
