@@ -177,42 +177,6 @@ static FSMode fs_dev_translate_permission_mode(mode_t mode) {
     return (FSMode) (((mode & S_IRWXU) << 2) | ((mode & S_IRWXG) << 1) | (mode & S_IRWXO));
 }
 
-static uint32_t fs_dev_translate_open_mode(int create_mode) {
-    uint32_t retMode = 0;
-
-    if ((create_mode & S_IRUSR) == S_IRUSR) {
-        retMode |= FS_MODE_READ_OWNER;
-    }
-    if ((create_mode & S_IWUSR) == S_IWUSR) {
-        retMode |= FS_MODE_WRITE_OWNER;
-    }
-    if ((create_mode & S_IXUSR) == S_IXUSR) {
-        retMode |= FS_MODE_EXEC_OWNER;
-    }
-
-    if ((create_mode & S_IRGRP) == S_IRGRP) {
-        retMode |= FS_MODE_READ_GROUP;
-    }
-    if ((create_mode & S_IWGRP) == S_IWGRP) {
-        retMode |= FS_MODE_WRITE_GROUP;
-    }
-    if ((create_mode & S_IXGRP) == S_IXGRP) {
-        retMode |= FS_MODE_EXEC_GROUP;
-    }
-
-    if ((create_mode & S_IROTH) == S_IROTH) {
-        retMode |= FS_MODE_READ_OTHER;
-    }
-    if ((create_mode & S_IWOTH) == S_IWOTH) {
-        retMode |= FS_MODE_WRITE_OTHER;
-    }
-    if ((create_mode & S_IXOTH) == S_IXOTH) {
-        retMode |= FS_MODE_EXEC_OTHER;
-    }
-
-    return retMode;
-}
-
 static time_t fs_dev_translate_time(FSTime timeValue) {
     OSCalendarTime fileTime;
     FSTimeToCalendarTime(timeValue, &fileTime);
@@ -280,7 +244,7 @@ static int fs_dev_open_r(struct _reent *r, void *fileStruct, const char *path, i
     // cache whether IOSUHAX_FSA_OpenFileEx is supported to prevent older iosuhax implementations from being slower
     // older implementations aren't able to open encrypted files or create files with a specified mode
     if (dev->extended) {
-        result = IOSUHAX_FSA_OpenFileEx(dev->fsaFd, real_path, fsMode, &fd, fs_dev_translate_open_mode(mode), openEncrypted ? FSA_OPENFLAGS_OPEN_ENCRYPTED : FSA_OPENFLAGS_NONE, 0);
+        result = IOSUHAX_FSA_OpenFileEx(dev->fsaFd, real_path, fsMode, &fd, fs_dev_translate_permission_mode(mode), openEncrypted ? FSA_OPENFLAGS_OPEN_ENCRYPTED : FSA_OPENFLAGS_NONE, 0);
         if (result == IOS_ERROR_INVALID_ARG) dev->extended = false;
     }
     if (!dev->extended) {
@@ -837,7 +801,7 @@ static int fs_dev_fchmod_r(struct _reent *r, void *fd, mode_t mode) {
     }
 
     OSLockMutex(file->dev->pMutex);
-    int result = IOSUHAX_FSA_ChangeMode(file->dev->fsaFd, file->path, mode);
+    int result = IOSUHAX_FSA_ChangeMode(file->dev->fsaFd, file->path, fs_dev_translate_permission_mode(mode));
     OSUnlockMutex(file->dev->pMutex);
 
     if (result < 0) {
