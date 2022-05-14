@@ -44,6 +44,7 @@ typedef struct _fs_dev_private_t {
     char *mount_path;
     int fsaFd;
     int mounted;
+    int isDisc;
     bool extended;
     void *pMutex;
 } fs_dev_private_t;
@@ -110,7 +111,7 @@ static char *fs_dev_real_path(const char *path, fs_dev_private_t *dev) {
         strcpy(new_name + mount_len, path);
         return new_name;
     }
-    return new_name;
+    return NULL;
 }
 
 static int fs_dev_translate_error(FSStatus error) {
@@ -153,7 +154,7 @@ static int fs_dev_translate_error(FSStatus error) {
     return (int) error;
 }
 
-static mode_t fs_dev_translate_stat_mode(FSStat fileStat, bool followLinks, bool isRootDirectory) {
+static mode_t fs_dev_translate_stat_mode(FSStat fileStat, bool followLinks, bool isRootDirectory, bool isDisc) {
     // Convert file types
     mode_t typeMode = 0;
     if (isRootDirectory) {
@@ -163,6 +164,9 @@ static mode_t fs_dev_translate_stat_mode(FSStat fileStat, bool followLinks, bool
     } else if ((fileStat.flags & FS_STAT_DIRECTORY) == FS_STAT_DIRECTORY) {
         typeMode |= S_IFDIR;
     } else if ((fileStat.flags & FS_STAT_FILE) == FS_STAT_FILE) {
+        typeMode |= S_IFREG;
+    } else if (isDisc) {
+        // Wii U doesn't return FS_STAT_FILE on disc partitions so return a regular file if they don't match any flags
         typeMode |= S_IFREG;
     }
 
@@ -461,7 +465,7 @@ static int fs_dev_fstat_r(struct _reent *r, void *fd, struct stat *st) {
     // Convert fields to posix stat
     st->st_dev     = (dev_t) file->dev;
     st->st_ino     = stats.entryId;
-    st->st_mode    = fs_dev_translate_stat_mode(stats, true, false);
+    st->st_mode    = fs_dev_translate_stat_mode(stats, true, false, file->dev->isDisc);
     st->st_nlink   = 1;
     st->st_uid     = stats.owner;
     st->st_gid     = stats.group;
@@ -507,7 +511,7 @@ static int fs_dev_stat_r(struct _reent *r, const char *path, struct stat *st) {
     // Convert fields to posix stat
     st->st_dev     = (dev_t) dev;
     st->st_ino     = stats.entryId;
-    st->st_mode    = fs_dev_translate_stat_mode(stats, true, (strlen(dev->mount_path) + 1 == strlen(real_path)));
+    st->st_mode    = fs_dev_translate_stat_mode(stats, true, (strlen(dev->mount_path)+1 >= strlen(real_path)), dev->isDisc);
     st->st_nlink   = 1;
     st->st_uid     = stats.owner;
     st->st_gid     = stats.group;
@@ -554,7 +558,7 @@ static int fs_dev_lstat_r(struct _reent *r, const char *path, struct stat *st) {
     // Convert fields to posix stat
     st->st_dev     = (dev_t) dev;
     st->st_ino     = stats.entryId;
-    st->st_mode    = fs_dev_translate_stat_mode(stats, false, (strlen(dev->mount_path) + 1 == strlen(real_path)));
+    st->st_mode    = fs_dev_translate_stat_mode(stats, false, (strlen(dev->mount_path)+1 >= strlen(real_path)), dev->isDisc);
     st->st_nlink   = 1;
     st->st_uid     = stats.owner;
     st->st_gid     = stats.group;
@@ -747,6 +751,13 @@ static int fs_dev_mkdir_r(struct _reent *r, const char *path, int mode) {
     char *real_path = fs_dev_real_path(path, dev);
     if (!real_path) {
         r->_errno = ENOMEM;
+        OSUnlockMutex(dev->pMutex);
+        return -1;
+    }
+
+    if (strlen(dev->mount_path)+1 >= strlen(real_path)) {
+        r->_errno = EEXIST;
+        free(real_path);
         OSUnlockMutex(dev->pMutex);
         return -1;
     }
@@ -960,7 +971,7 @@ static int fs_dev_dirnext_r(struct _reent *r, DIR_ITER *dirState, char *filename
         // Convert fields to posix stat
         st->st_dev     = (dev_t) dirIter->dev;
         st->st_ino     = dir_entry->info.entryId;
-        st->st_mode    = fs_dev_translate_stat_mode(dir_entry->info, true, false);
+        st->st_mode    = fs_dev_translate_stat_mode(dir_entry->info, true, false, dirIter->dev->isDisc);
         st->st_nlink   = 1;
         st->st_uid     = dir_entry->info.owner;
         st->st_gid     = dir_entry->info.group;
@@ -1009,7 +1020,7 @@ static const devoptab_t devops_fs = {
         .utimes_r     = NULL,
 };
 
-static int fs_dev_add_device(const char *name, const char *mount_path, int fsaFd, int isMounted) {
+static int fs_dev_add_device(const char *name, const char *mount_path, int fsaFd, int isMounted, int isDisc) {
     devoptab_t *dev = NULL;
     char *devname   = NULL;
     char *devpath   = NULL;
@@ -1048,6 +1059,7 @@ static int fs_dev_add_device(const char *name, const char *mount_path, int fsaFd
     priv->fsaFd      = fsaFd;
     priv->mounted    = isMounted;
     priv->pMutex     = malloc(OS_MUTEX_SIZE);
+    priv->isDisc     = isDisc;
 
     // assume that the iosuhax implementation supports extended commands by default
     priv->extended = true;
@@ -1124,6 +1136,7 @@ static int fs_dev_remove_device(const char *path) {
 
 int mount_fs(const char *virt_name, int fsaFd, const char *dev_path, const char *mount_path) {
     int isMounted = 0;
+    int isDisc = 0;
 
     if (dev_path) {
         isMounted = 1;
@@ -1132,9 +1145,13 @@ int mount_fs(const char *virt_name, int fsaFd, const char *dev_path, const char 
         if (res != 0) {
             return res;
         }
+
+        if (strlen(dev_path) == strlen("/dev/odd0X") && (strncmp(dev_path, "/dev/odd0X", strlen("/dev/odd0X")-1) == 0)) {
+            isDisc = 1;
+        }
     }
 
-    return fs_dev_add_device(virt_name, mount_path, fsaFd, isMounted);
+    return fs_dev_add_device(virt_name, mount_path, fsaFd, isMounted, isDisc);
 }
 
 int unmount_fs(const char *virt_name) {
