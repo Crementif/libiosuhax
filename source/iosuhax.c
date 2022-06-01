@@ -1252,11 +1252,6 @@ int IOSUHAX_FSA_GetPosFile(int fsaFd, int fileHandle, uint32_t *position) {
     int result = out_buffer[0];
     *position  = out_buffer[1];
 
-    // Force FS_STAT_FILE when a size is set.
-    if ((out_data->flags & FS_STAT_DIRECTORY) != FS_STAT_DIRECTORY && out_data->size > 0) {
-        out_data->flags |= FS_STAT_FILE;
-    }
-
     free(io_buf);
     free(out_buffer);
     return result;
