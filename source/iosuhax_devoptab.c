@@ -69,16 +69,9 @@ static fs_dev_private_t *fs_dev_get_device_data(const char *path) {
     strtok(name, ":/");
 
     // Search the devoptab table for the specified device name
-    // NOTE: We do this manually due to a 'bug' in GetDeviceOpTab
-    //       which ignores names with suffixes and causes names
-    //       like "ntfs" and "ntfs1" to be seen as equals
-    for (i = 3; i < STD_MAX; i++) {
-        devoptab = devoptab_list[i];
-        if (devoptab && devoptab->name) {
-            if (strcmp(name, devoptab->name) == 0) {
-                return (fs_dev_private_t *) devoptab->deviceData;
-            }
-        }
+    devoptab = GetDeviceOpTab(name);
+    if (devoptab) {
+        return devoptab->deviceData;
     }
 
     return NULL;
@@ -462,9 +455,9 @@ static int fs_dev_stat_r(struct _reent *r, const char *path, struct stat *st) {
 
     FSStat stats;
     int result = IOSUHAX_FSA_GetStat(dev->fsaFd, real_path, &stats);
-    free(real_path);
     if (result < 0) {
         r->_errno = fs_dev_translate_error(result);
+        free(real_path);
         OSUnlockMutex(dev->pMutex);
         return -1;
     }
@@ -484,6 +477,7 @@ static int fs_dev_stat_r(struct _reent *r, const char *path, struct stat *st) {
     st->st_ctime   = fs_dev_translate_time(stats.created);
     st->st_mtime   = fs_dev_translate_time(stats.modified);
 
+    free(real_path);
     OSUnlockMutex(dev->pMutex);
     return 0;
 }
@@ -509,9 +503,9 @@ static int fs_dev_lstat_r(struct _reent *r, const char *path, struct stat *st) {
 
     FSStat stats;
     int result = IOSUHAX_FSA_GetStat(dev->fsaFd, real_path, &stats);
-    free(real_path);
     if (result < 0) {
         r->_errno = fs_dev_translate_error(result);
+        free(real_path);
         OSUnlockMutex(dev->pMutex);
         return -1;
     }
@@ -531,6 +525,7 @@ static int fs_dev_lstat_r(struct _reent *r, const char *path, struct stat *st) {
     st->st_ctime   = fs_dev_translate_time(stats.created);
     st->st_mtime   = fs_dev_translate_time(stats.modified);
 
+    free(real_path);
     OSUnlockMutex(dev->pMutex);
     return 0;
 }
@@ -915,113 +910,99 @@ static const devoptab_t devops_fs = {
 };
 
 static int fs_dev_add_device(const char *name, const char *mount_path, int fsaFd, int isMounted) {
-    devoptab_t *dev = NULL;
-    char *devname   = NULL;
-    char *devpath   = NULL;
-    int i;
-
     // Sanity check
     if (!name) {
         errno = EINVAL;
         return -1;
     }
 
-    // Allocate a devoptab for this device
-    dev = (devoptab_t *) malloc(sizeof(devoptab_t) + strlen(name) + 1);
+    // Initialize a devoptab for this device
+    devoptab_t *dev = (devoptab_t *) malloc(sizeof(devoptab_t));
     if (!dev) {
         errno = ENOMEM;
         return -1;
     }
+    memcpy(dev, &devops_fs, sizeof(devoptab_t));
 
-    // Use the space allocated at the end of the devoptab for storing the device name
-    devname = (char *) (dev + 1);
-    strcpy(devname, name);
+    // Create copy of devoptab name
+    dev->name = strdup(name);
+    if (!dev->name) {
+        free(dev);
+        errno = ENOMEM;
+        return -1;
+    }
 
-    // create private data
-    fs_dev_private_t *priv = (fs_dev_private_t *) malloc(sizeof(fs_dev_private_t) + strlen(mount_path) + 1);
+    // Initialize private data for this device
+    fs_dev_private_t* priv = (fs_dev_private_t *) malloc(sizeof(fs_dev_private_t));
     if (!priv) {
+        free(dev->name);
         free(dev);
         errno = ENOMEM;
         return -1;
     }
+    dev->deviceData = priv;
+    priv->fsaFd = fsaFd;
+    priv->mounted = isMounted;
 
-    devpath = (char *) (priv + 1);
-    strcpy(devpath, mount_path);
-
-    // setup private data
-    priv->mount_path = devpath;
-    priv->fsaFd      = fsaFd;
-    priv->mounted    = isMounted;
-    priv->pMutex     = malloc(OS_MUTEX_SIZE);
-
-    if (!priv->pMutex) {
-        free(dev);
+    // Create copy of mount path
+    priv->mount_path = strdup(name);
+    if (!priv->mount_path) {
         free(priv);
+        free(dev->name);
+        free(dev);
         errno = ENOMEM;
         return -1;
     }
 
+    // Allocate and initialize memory for CafeOS mutex
+    priv->pMutex = malloc(OS_MUTEX_SIZE);
+    if (!priv->pMutex) {
+        free(priv->mount_path);
+        free(priv);
+        free(dev->name);
+        free(dev);
+        errno = ENOMEM;
+        return -1;
+    }
     OSInitMutex(priv->pMutex);
 
-    // Setup the devoptab
-    memcpy(dev, &devops_fs, sizeof(devoptab_t));
-    dev->name       = devname;
-    dev->deviceData = priv;
-
-    // Add the device to the devoptab table (if there is a free slot)
-    for (i = 3; i < STD_MAX; i++) {
-        if (devoptab_list[i] == devoptab_list[0]) {
-            devoptab_list[i] = dev;
-            return 0;
-        }
+    if (AddDevice(dev) == -1) {
+        errno = EADDRNOTAVAIL;
+        return -1;
     }
 
-    // failure, free all memory
-    free(priv);
-    free(dev);
-
-    // If we reach here then there are no free slots in the devoptab table for this device
-    errno = EADDRNOTAVAIL;
-    return -1;
+    return 0;
 }
 
 static int fs_dev_remove_device(const char *path) {
-    const devoptab_t *devoptab = NULL;
-    char name[128]             = {0};
-    int i;
-
     // Get the device name from the path
     strncpy(name, path, 127);
     strtok(name, ":/");
 
     // Find and remove the specified device from the devoptab table
-    // NOTE: We do this manually due to a 'bug' in RemoveDevice
-    //       which ignores names with suffixes and causes names
-    //       like "ntfs" and "ntfs1" to be seen as equals
-    for (i = 3; i < STD_MAX; i++) {
-        devoptab = devoptab_list[i];
-        if (devoptab && devoptab->name) {
-            if (strcmp(name, devoptab->name) == 0) {
-                devoptab_list[i] = devoptab_list[0];
+    const devoptab_t *devoptab = GetDeviceOpTab(name);
+    if (!devoptab || !RemoveDevice(name)) {
+        return -1;
+    }
+    
+    if (devoptab->deviceData) {
+        fs_dev_private_t *priv = (fs_dev_private_t *) devoptab->deviceData;
 
-                if (devoptab->deviceData) {
-                    fs_dev_private_t *priv = (fs_dev_private_t *) devoptab->deviceData;
+        if (priv->mounted)
+            IOSUHAX_FSA_Unmount(priv->fsaFd, priv->mount_path, 2);
+        
+        if (priv->mount_path)
+            free(priv->mount_path);
 
-                    if (priv->mounted)
-                        IOSUHAX_FSA_Unmount(priv->fsaFd, priv->mount_path, 2);
-
-                    if (priv->pMutex)
-                        free(priv->pMutex);
-                    free(devoptab->deviceData);
-                }
-
-                free((devoptab_t *) devoptab);
-                return 0;
-            }
-        }
+        if (priv->pMutex)
+            free(priv->pMutex);
+        
+        free(priv);
     }
 
-    return -1;
+    free(devoptab->name);
+    free(devoptab);
+    return 0;
 }
 
 int mount_fs(const char *virt_name, int fsaFd, const char *dev_path, const char *mount_path) {
