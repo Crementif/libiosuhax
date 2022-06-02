@@ -62,7 +62,6 @@ typedef struct _fs_dev_dir_entry_t {
 static fs_dev_private_t *fs_dev_get_device_data(const char *path) {
     const devoptab_t *devoptab = NULL;
     char name[128]             = {0};
-    int i;
 
     // Get the device name from the path
     strncpy(name, path, 127);
@@ -933,22 +932,22 @@ static int fs_dev_add_device(const char *name, const char *mount_path, int fsaFd
     }
 
     // Initialize private data for this device
-    fs_dev_private_t* priv = (fs_dev_private_t *) malloc(sizeof(fs_dev_private_t));
+    fs_dev_private_t *priv = (fs_dev_private_t *) malloc(sizeof(fs_dev_private_t));
     if (!priv) {
-        free(dev->name);
+        free((char *) dev->name);
         free(dev);
         errno = ENOMEM;
         return -1;
     }
     dev->deviceData = priv;
-    priv->fsaFd = fsaFd;
-    priv->mounted = isMounted;
+    priv->fsaFd     = fsaFd;
+    priv->mounted   = isMounted;
 
     // Create copy of mount path
     priv->mount_path = strdup(name);
     if (!priv->mount_path) {
         free(priv);
-        free(dev->name);
+        free((char *) dev->name);
         free(dev);
         errno = ENOMEM;
         return -1;
@@ -957,9 +956,9 @@ static int fs_dev_add_device(const char *name, const char *mount_path, int fsaFd
     // Allocate and initialize memory for CafeOS mutex
     priv->pMutex = malloc(OS_MUTEX_SIZE);
     if (!priv->pMutex) {
-        free(priv->mount_path);
+        free((char *) priv->mount_path);
         free(priv);
-        free(dev->name);
+        free((char *) dev->name);
         free(dev);
         errno = ENOMEM;
         return -1;
@@ -975,6 +974,8 @@ static int fs_dev_add_device(const char *name, const char *mount_path, int fsaFd
 }
 
 static int fs_dev_remove_device(const char *path) {
+    char name[128] = {0};
+
     // Get the device name from the path
     strncpy(name, path, 127);
     strtok(name, ":/");
@@ -984,24 +985,24 @@ static int fs_dev_remove_device(const char *path) {
     if (!devoptab || !RemoveDevice(name)) {
         return -1;
     }
-    
+
     if (devoptab->deviceData) {
         fs_dev_private_t *priv = (fs_dev_private_t *) devoptab->deviceData;
 
         if (priv->mounted)
             IOSUHAX_FSA_Unmount(priv->fsaFd, priv->mount_path, 2);
-        
+
         if (priv->mount_path)
             free(priv->mount_path);
 
         if (priv->pMutex)
             free(priv->pMutex);
-        
+
         free(priv);
     }
 
-    free(devoptab->name);
-    free(devoptab);
+    free((char *) devoptab->name);
+    free((void *) devoptab);
     return 0;
 }
 
