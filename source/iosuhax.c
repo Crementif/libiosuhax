@@ -98,6 +98,7 @@ struct FSAShimBuffer {
 };
 
 #define __FSAShimSetupRequestMount ((int (*)(FSAShimBuffer *, uint32_t, const char *, const char *, uint32_t, uint32_t, uint32_t))(0x101C400 + 0x042f88))
+#define __FSAShimSetupRequestUnmount ((int (*)(FSAShimBuffer *, uint32_t, const char *, uint32_t))(0x101C400 + 0x43130))
 #define __FSAShimSend              ((int (*)(FSAShimBuffer *, uint32_t))(0x101C400 + 0x042d90))
 
 int IOSUHAX_FSMount(FSClient *client, const char *source, const char *target) {
@@ -109,6 +110,24 @@ int IOSUHAX_FSMount(FSClient *client, const char *source, const char *target) {
     int handle    = (int) *(uint32_t *) (body + 0x1444);
 
     int res = __FSAShimSetupRequestMount(buffer, handle, source, target, 0, 0, 0);
+    if (res != 0) {
+        free(buffer);
+        return res;
+    }
+    res = __FSAShimSend(buffer, 0);
+    free(buffer);
+    return res;
+}
+
+int IOSUHAX_FSUnmount(FSClient *client, const char *mountedTarget) {
+    FSAShimBuffer *buffer = (FSAShimBuffer *) memalign(0x40, 0x1000);
+    if (!buffer) {
+        return -1;
+    }
+    uint8_t *body = (uint8_t *) fsClientGetBody(client);
+    int handle    = (int) *(uint32_t *) (body + 0x1444);
+
+    int res = __FSAShimSetupRequestUnmount(buffer, handle, mountedTarget, 0/*0x80000000 for FSBindUnmount*/);
     if (res != 0) {
         free(buffer);
         return res;

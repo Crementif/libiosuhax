@@ -42,6 +42,7 @@ extern "C" {
 int IOSUHAX_UnlockFSClient(FSClient *client);
 
 int IOSUHAX_FSMount(FSClient *client, const char *source, const char *target);
+int IOSUHAX_FSUnmount(FSClient *client, const char *mountedTarget);
 
 int IOSUHAX_Open(const char *dev); // if dev == NULL the default path /dev/iosuhax will be used
 int IOSUHAX_Close(void);
